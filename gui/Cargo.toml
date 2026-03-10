@@ -1,0 +1,14 @@
+[package]
+name = "dt-cert-uploader-gui"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "dt-cert-uploader-gui"
+path = "src/main.rs"
+
+[dependencies]
+dt-cert-uploader-core = { path = "../core" }
+eframe = "0.31"
+egui = "0.31"
+rfd = "0.15"

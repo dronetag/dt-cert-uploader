@@ -1,0 +1,8 @@
+[package]
+name = "dt-cert-uploader-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mcumgr-toolkit = "0.12"
+serialport = "4"

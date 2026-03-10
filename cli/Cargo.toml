@@ -1,0 +1,12 @@
+[package]
+name = "dt-cert-uploader-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "dt-cert-uploader-cli"
+path = "src/main.rs"
+
+[dependencies]
+dt-cert-uploader-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
