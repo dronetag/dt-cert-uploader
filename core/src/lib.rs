@@ -27,6 +27,13 @@ impl DeviceType {
         }
     }
 
+    pub fn settings_mux_addr(&self) -> u8 {
+        match self {
+            DeviceType::DronetagTransmitter => 0x13,
+            DeviceType::DronetagRider => 0x25,
+        }
+    }
+
     pub fn baud_rate(&self) -> u32 {
         match self {
             DeviceType::DronetagTransmitter => 500_000,
@@ -121,6 +128,28 @@ impl MuxSlipSerial {
                     self.read_buf.extend_from_slice(&decoded[1..]);
                 }
                 return Ok(());
+            }
+        }
+    }
+
+    /// Read one complete SLIP frame and return (mux_addr, payload).
+    /// Unlike `read()`, this does not filter by address — caller decides.
+    pub fn read_raw_frame(&mut self) -> io::Result<(u8, Vec<u8>)> {
+        loop {
+            let mut byte = [0u8; 1];
+            self.port.read_exact(&mut byte)?;
+            self.raw_buf.push(byte[0]);
+
+            if byte[0] == SLIP_END && !self.raw_buf.is_empty() {
+                let decoded = Self::slip_decode(&self.raw_buf);
+                self.raw_buf.clear();
+
+                if decoded.len() > 1 {
+                    let addr = decoded[0];
+                    let payload = decoded[1..].to_vec();
+                    return Ok((addr, payload));
+                }
+                // Empty or malformed frame — try next one
             }
         }
     }
@@ -318,4 +347,59 @@ pub fn list_serial_ports() -> Vec<String> {
         .into_iter()
         .map(|p| p.port_name)
         .collect()
+}
+
+/// Read device settings by sending an empty JSON `{}` to the settings mux address
+/// and reassembling the JSON response (which may span multiple SLIP frames).
+pub fn read_settings(port_name: &str, device_type: &DeviceType) -> Result<String, String> {
+    let port = serialport::new(port_name, device_type.baud_rate())
+        .timeout(Duration::from_secs(4))
+        .open()
+        .map_err(|e| format!("Failed to open serial port '{}': {}", port_name, e))?;
+
+    let settings_mux_addr = device_type.settings_mux_addr();
+    let mut slip = MuxSlipSerial::new(port, settings_mux_addr);
+
+    // Send empty JSON request
+    slip.write_all(b"{\"nested\": true}")
+        .map_err(|e| format!("Failed to send settings request: {}", e))?;
+    slip.flush()
+        .map_err(|e| format!("Failed to flush: {}", e))?;
+
+    // Reassemble JSON response — filter to settings channel only
+    let mut json_buf = String::new();
+    let mut brace_count: i32 = 0;
+    let mut in_json = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+
+    loop {
+        if std::time::Instant::now() > deadline {
+            return Err("Timeout waiting for settings response from device".to_string());
+        }
+
+        let (addr, payload) = slip.read_raw_frame()
+            .map_err(|e| format!("Failed to read frame: {}", e))?;
+
+        // Ignore frames not addressed to the settings channel
+        if addr != settings_mux_addr {
+            continue;
+        }
+
+        let chunk = std::str::from_utf8(&payload)
+            .unwrap_or("")
+            .to_string();
+
+        for ch in chunk.chars() {
+            match ch {
+                '{' => { brace_count += 1; in_json = true; }
+                '}' => { brace_count -= 1; }
+                _ => {}
+            }
+        }
+        json_buf.push_str(&chunk);
+
+        if in_json && brace_count == 0 {
+            return Ok(json_buf);
+        }
+    }
 }
