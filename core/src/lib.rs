@@ -12,22 +12,55 @@ const SLIP_ESC: u8 = 0xDB;
 const SLIP_ESC_END: u8 = 0xDC;
 const SLIP_ESC_ESC: u8 = 0xDD;
 
-const MCUMGR_MUX_ADDR: u8 = 0x11;
+/// Supported device types with their mux address and baud rate
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DeviceType {
+    DronetagTransmitter,
+    DronetagRider,
+}
+
+impl DeviceType {
+    pub fn mux_addr(&self) -> u8 {
+        match self {
+            DeviceType::DronetagTransmitter => 0x11,
+            DeviceType::DronetagRider => 0x23,
+        }
+    }
+
+    pub fn baud_rate(&self) -> u32 {
+        match self {
+            DeviceType::DronetagTransmitter => 500_000,
+            DeviceType::DronetagRider => 115_200,
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            DeviceType::DronetagTransmitter => "Dronetag Transmitter",
+            DeviceType::DronetagRider => "Dronetag RIDER",
+        }
+    }
+
+    pub fn all() -> &'static [DeviceType] {
+        &[DeviceType::DronetagTransmitter, DeviceType::DronetagRider]
+    }
+}
 
 // --- Mux+SLIP serial wrapper ---
-
 pub struct MuxSlipSerial {
     port: Box<dyn SerialPort>,
     read_buf: Vec<u8>,
     raw_buf: Vec<u8>,
+    mux_addr: u8,
 }
 
 impl MuxSlipSerial {
-    pub fn new(port: Box<dyn SerialPort>) -> Self {
+    pub fn new(port: Box<dyn SerialPort>, mux_addr: u8) -> Self {
         Self {
             port,
             read_buf: Vec::new(),
             raw_buf: Vec::new(),
+            mux_addr,
         }
     }
 
@@ -108,7 +141,7 @@ impl Read for MuxSlipSerial {
 impl Write for MuxSlipSerial {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut payload = Vec::with_capacity(1 + buf.len());
-        payload.push(MCUMGR_MUX_ADDR);
+        payload.push(self.mux_addr);
         payload.extend_from_slice(buf);
         let encoded = Self::slip_encode(&payload);
         self.port.write_all(&encoded)?;
@@ -136,7 +169,7 @@ impl mcumgr_toolkit::transport::serial::ConfigurableTimeout for MuxSlipSerial {
 /// The three certificate files to upload, plus connection parameters.
 pub struct UploadParams {
     pub port: String,
-    pub baud_rate: u32,
+    pub device_type: DeviceType,
     pub sec_tag: u8,
     pub ca_path: String,
     pub client_cert_path: String,
@@ -178,6 +211,36 @@ fn build_file_list(params: &UploadParams) -> Vec<(String, String, String)> {
     ]
 }
 
+/// Maximum allowed certificate file size (5 KB — 4 KB typical + 25% reserve)
+pub const MAX_CERT_FILE_SIZE: u64 = 5 * 1024;
+
+/// Validate all certificate file paths and sizes before attempting upload.
+pub fn validate_cert_files(params: &UploadParams) -> Result<(), String> {
+    let files = [
+        (&params.ca_path, "CA Certificate"),
+        (&params.client_cert_path, "Client Certificate"),
+        (&params.client_key_path, "Client Private Key"),
+    ];
+
+    for (path, label) in &files {
+        let metadata = std::fs::metadata(path)
+            .map_err(|e| format!("{}: cannot read file '{}': {}", label, path, e))?;
+
+        let size = metadata.len();
+        if size == 0 {
+            return Err(format!("{}: file '{}' is empty", label, path));
+        }
+        if size > MAX_CERT_FILE_SIZE {
+            return Err(format!(
+                "{}: file '{}' is too large ({} bytes, maximum is {} bytes / {} KB)",
+                label, path, size, MAX_CERT_FILE_SIZE, MAX_CERT_FILE_SIZE / 1024
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 /// Connect to the device and upload all three certificate files.
 ///
 /// `progress_cb` is called with progress updates during upload.
@@ -186,16 +249,35 @@ pub fn upload_certificates(
     params: &UploadParams,
     mut progress_cb: impl FnMut(UploadProgress) -> bool,
 ) -> Result<(), String> {
-    let port = serialport::new(&params.port, params.baud_rate)
-        .timeout(Duration::from_secs(5))
+    validate_cert_files(params)?;
+
+    // Use a short open timeout so we fail fast on wrong/busy ports
+    let port = serialport::new(&params.port, params.device_type.baud_rate())
+        .timeout(Duration::from_secs(2))
         .open()
         .map_err(|e| format!("Failed to open serial port '{}': {}", params.port, e))?;
 
-    let client = MCUmgrClient::new_from_serial(MuxSlipSerial::new(port));
+    let client = MCUmgrClient::new_from_serial(
+        MuxSlipSerial::new(port, params.device_type.mux_addr())
+    );
 
-    client.use_auto_frame_size().unwrap_or_else(|e| {
-        eprintln!("Warning: could not read auto frame size, using default. ({})", e);
+    // Signal to UI that we are connected and starting
+    progress_cb(UploadProgress {
+        file_index: usize::MAX,
+        file_label: "Initializing...".to_string(),
+        remote_path: String::new(),
+        transferred: 0,
+        total: 1,
     });
+
+    // Fail fast — no retries, short timeout to detect incorrect device connected
+    client.set_retries(0);
+    client.set_timeout(Duration::from_secs(2))
+    .unwrap_or_else(|e| eprintln!("Warning: could not set timeout: {}", e));
+
+    client.use_auto_frame_size().map_err(|e| {
+        format!("Device did not respond (wrong port, device type, or mux address?): {}", e)
+    })?;
 
     let files = build_file_list(params);
 
@@ -205,7 +287,6 @@ pub fn upload_certificates(
 
         let size = data.len() as u64;
         let reader = std::io::Cursor::new(data);
-
         let remote_path_clone = remote_path.clone();
         let label_clone = label.clone();
 

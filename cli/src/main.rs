@@ -1,7 +1,5 @@
-use std::io::Write;
-
 use clap::Parser;
-use dt_cert_uploader_core::{upload_certificates, UploadParams, UploadProgress};
+use dt_cert_uploader_core::{upload_certificates, validate_cert_files, UploadParams, UploadProgress, DeviceType};
 
 /// Upload TLS certificates to a Zephyr device via MCUmgr over serial.
 #[derive(Parser, Debug)]
@@ -11,9 +9,9 @@ struct Cli {
     #[arg(short, long)]
     port: String,
 
-    /// Baud rate
-    #[arg(short, long, default_value_t = 500000)]
-    baud_rate: u32,
+    /// Device type: transmitter (mux 0x11, 500000 baud), rider (mux 0x23, 115200 baud)
+    #[arg(short, long, default_value = "transmitter", value_parser = parse_device_type)]
+    device: DeviceType,
 
     /// Security tag (1-9)
     #[arg(short, long, value_parser = clap::value_parser!(u8).range(1..=9))]
@@ -32,60 +30,53 @@ struct Cli {
     client_key: String,
 }
 
+fn parse_device_type(s: &str) -> Result<DeviceType, String> {
+    match s.to_lowercase().as_str() {
+        "transmitter" => Ok(DeviceType::DronetagTransmitter),
+        "rider"       => Ok(DeviceType::DronetagRider),
+        _ => Err(format!("Unknown device type '{}'. Valid options: transmitter, rider", s)),
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
     let params = UploadParams {
         port: cli.port.clone(),
-        baud_rate: cli.baud_rate,
+        device_type: cli.device,
         sec_tag: cli.sec_tag,
         ca_path: cli.ca,
         client_cert_path: cli.client_cert,
         client_key_path: cli.client_key,
     };
 
-    println!("Connecting to '{}' at {} baud...", params.port, params.baud_rate);
+    if let Err(e) = validate_cert_files(&params) {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
+
+    println!("Device:       {} (mux 0x{:02X}, {} baud)",
+        params.device_type.display_name(),
+        params.device_type.mux_addr(),
+        params.device_type.baud_rate()
+    );
     println!("Security tag: {}\n", params.sec_tag);
+    println!("Uploading...");
 
-    let mut last_file_index = usize::MAX;
-
-    let result = upload_certificates(&params, |progress: UploadProgress| {
-        // Print header when we move to a new file
-        if progress.file_index != last_file_index {
-            if last_file_index != usize::MAX {
-                println!("\r  Done.                              ");
-            }
-            println!(
-                "[{}/3] {} -> {}",
-                progress.file_index + 1,
-                progress.file_label,
-                progress.remote_path
-            );
-            last_file_index = progress.file_index;
-        }
-
-        let pct = progress.transferred * 100 / progress.total;
-        print!(
-            "\r  {}% ({}/{} bytes)  ",
-            pct, progress.transferred, progress.total
-        );
-        let _ = std::io::stdout().flush();
-
-        true // return false to abort
+    let result = upload_certificates(&params, |_progress: UploadProgress| {
+        true
     });
 
     match result {
         Ok(()) => {
-            println!("\r  Done.                              ");
-            println!("\nAll certificates uploaded successfully.");
+            println!("Done.\n");
+            println!("All certificates uploaded successfully.");
             println!("  CA cert:     /storage/ca_{}.crt", params.sec_tag);
             println!("  Client cert: /storage/client_{}.crt", params.sec_tag);
             println!("  Client key:  /storage/client_{}.key", params.sec_tag);
         }
         Err(e) => {
             eprintln!("\nError: {}", e);
-            eprintln!("Hint: on Linux, ensure you are in the 'dialout' group:");
-            eprintln!("  sudo usermod -a -G dialout $USER");
             std::process::exit(1);
         }
     }
