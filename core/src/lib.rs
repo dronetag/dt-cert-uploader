@@ -153,6 +153,23 @@ impl MuxSlipSerial {
             }
         }
     }
+
+    /// Write settings by sending a JSON string to the settings mux address.
+    pub fn write_settings(port_name: &str, device_type: &DeviceType, json: &str) -> Result<(), String> {
+        let port = serialport::new(port_name, device_type.baud_rate())
+            .timeout(Duration::from_secs(4))
+            .open()
+            .map_err(|e| format!("Failed to open serial port '{}': {}", port_name, e))?;
+
+        let mut slip = MuxSlipSerial::new(port, device_type.settings_mux_addr());
+
+        slip.write_all(json.as_bytes())
+            .map_err(|e| format!("Failed to send settings: {}", e))?;
+        slip.flush()
+            .map_err(|e| format!("Failed to flush: {}", e))?;
+
+        Ok(())
+    }
 }
 
 impl Read for MuxSlipSerial {
@@ -402,4 +419,33 @@ pub fn read_settings(port_name: &str, device_type: &DeviceType) -> Result<String
             return Ok(json_buf);
         }
     }
+}
+
+/// Write settings by sending a JSON string to the settings mux address.
+pub fn write_settings(port_name: &str, device_type: &DeviceType, json: &str) -> Result<(), String> {
+    let port = serialport::new(port_name, device_type.baud_rate())
+        .timeout(Duration::from_secs(4))
+        .open()
+        .map_err(|e| format!("Failed to open serial port '{}': {}", port_name, e))?;
+
+    let mut slip = MuxSlipSerial::new(port, device_type.settings_mux_addr());
+
+    // Ensure "nested" and "save" are always present
+    let mut value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    if let Some(obj) = value.as_object_mut() {
+        obj.entry("nested").or_insert(serde_json::Value::Bool(true));
+        obj.entry("save").or_insert(serde_json::Value::Bool(true));
+    }
+
+    let final_json = serde_json::to_string(&value)
+        .map_err(|e| format!("Failed to serialize JSON: {}", e))?;
+
+    slip.write_all(final_json.as_bytes())
+        .map_err(|e| format!("Failed to send settings: {}", e))?;
+    slip.flush()
+        .map_err(|e| format!("Failed to flush: {}", e))?;
+
+    Ok(())
 }

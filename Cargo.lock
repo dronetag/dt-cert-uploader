@@ -1064,6 +1064,7 @@ name = "dt-cert-uploader-core"
 version = "0.1.0"
 dependencies = [
  "mcumgr-toolkit",
+ "serde_json",
  "serialport",
 ]
 

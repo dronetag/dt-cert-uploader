@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 mcumgr-toolkit = "0.12"
 serialport = "4"
+serde_json = { version = "1", features = ["preserve_order"] }

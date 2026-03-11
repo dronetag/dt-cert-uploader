@@ -1,5 +1,5 @@
 use clap::Parser;
-use dt_cert_uploader_core::{upload_certificates, validate_cert_files, read_settings, UploadParams, UploadProgress, DeviceType};
+use dt_cert_uploader_core::{upload_certificates, validate_cert_files, read_settings, write_settings, UploadParams, UploadProgress, DeviceType};
 /// Upload TLS certificates to a Zephyr device via MCUmgr over serial.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -31,6 +31,10 @@ struct Cli {
     /// Read and print current device settings as JSON
     #[arg(long)]
     read_settings: bool,
+
+    /// Write settings to device as a JSON string
+    #[arg(long)]
+    write_settings: Option<String>,
 }
 
 fn parse_device_type(s: &str) -> Result<DeviceType, String> {
@@ -76,6 +80,26 @@ fn main() {
                     }
                 }
             }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    if let Some(json_str) = &cli.write_settings {
+        // Validate it's valid JSON before sending
+        if let Err(e) = serde_json::from_str::<serde_json::Value>(json_str) {
+            eprintln!("Error: invalid JSON: {}", e);
+            std::process::exit(1);
+        }
+
+        println!("Writing settings to {} on '{}'...\n",
+            cli.device.display_name(), cli.port);
+
+        match write_settings(&cli.port, &cli.device, json_str) {
+            Ok(()) => println!("Settings written successfully."),
             Err(e) => {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
