@@ -123,7 +123,38 @@ jobs:
         run: |
           mkdir dist
           cp target/${{ matrix.target }}/release/${{ matrix.cli_artifact }} dist/
-          cp target/${{ matrix.target }}/release/${{ matrix.gui_artifact }} dist/
+
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            # Create .app bundle for GUI
+            APP_DIR="dist/dt-cert-uploader-gui.app"
+            mkdir -p "$APP_DIR/Contents/MacOS"
+            cp target/${{ matrix.target }}/release/${{ matrix.gui_artifact }} "$APP_DIR/Contents/MacOS/"
+            cat > "$APP_DIR/Contents/Info.plist" << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>dt-cert-uploader-gui</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.dronetag.dt-cert-uploader</string>
+            <key>CFBundleName</key>
+            <string>Dronetag Certificate Upload</string>
+            <key>CFBundleVersion</key>
+            <string>${{ inputs.version }}</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>10.15</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+          else
+            cp target/${{ matrix.target }}/release/${{ matrix.gui_artifact }} dist/
+          fi
+
           cd dist
           tar -czf ../dt-cert-uploader-${{ matrix.target }}.tar.gz *
 
