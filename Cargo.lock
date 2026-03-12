@@ -1076,6 +1076,7 @@ dependencies = [
  "eframe",
  "egui",
  "rfd",
+ "serde_json",
 ]
 
 [[package]]

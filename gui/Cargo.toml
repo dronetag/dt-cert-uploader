@@ -12,3 +12,4 @@ dt-cert-uploader-core = { path = "../core" }
 eframe = "0.31"
 egui = "0.31"
 rfd = "0.15"
+serde_json = { version = "1", features = ["preserve_order"] }
