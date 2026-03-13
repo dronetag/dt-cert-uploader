@@ -26,7 +26,6 @@ fn main() -> eframe::Result {
 }
 
 // --- Upload state ---
-
 #[derive(Clone, PartialEq)]
 enum UploadState {
     Idle,
@@ -51,14 +50,31 @@ enum SettingsState {
     Error(String),
 }
 
-// --- MQTT settings fields ---
+// --- TLS / Security mode ---
+#[derive(Clone, PartialEq)]
+enum TlsMode {
+    PlainTcp,          // sec_tag = -1
+    Tls,               // sec_tag = 0
+    MutualTls(String), // sec_tag = user-supplied number
+}
 
+impl TlsMode {
+    fn sec_tag_value(&self) -> Result<i32, String> {
+        match self {
+            TlsMode::PlainTcp => Ok(-1),
+            TlsMode::Tls => Ok(0),
+            TlsMode::MutualTls(s) => s.trim().parse::<i32>()
+                .map_err(|_| format!("Invalid security tag: '{}'", s)),
+        }
+    }
+}
+
+// --- MQTT settings fields ---
 #[derive(Clone)]
 struct MqttSettings {
     dns_addr: String,
     ipaddr: String,
     port: String,
-    sec_tag: String,
     user_name: String,
     password: String,
     telemetry_topic: String,
@@ -76,7 +92,6 @@ impl Default for MqttSettings {
             dns_addr: String::new(),
             ipaddr: String::new(),
             port: String::new(),
-            sec_tag: String::new(),
             user_name: String::new(),
             password: String::new(),
             telemetry_topic: String::new(),
@@ -108,7 +123,6 @@ impl MqttSettings {
             dns_addr:        get_str("dns_addr",        ""),
             ipaddr:          get_str("ipaddr",          ""),
             port:            get_num("port",            ""),
-            sec_tag:         get_num("sec_tag",         ""),
             user_name:       get_str("user_name",       ""),
             password:        get_str("password",        ""),
             telemetry_topic: get_str("telemetry_topic", ""),
@@ -121,11 +135,10 @@ impl MqttSettings {
         }
     }
 
-    fn to_json_string(&self) -> Result<String, String> {
+    fn to_json_string(&self, tls_mode: &TlsMode) -> Result<String, String> {
         let port: u16 = self.port.trim().parse()
             .map_err(|_| format!("Invalid port number: '{}'", self.port))?;
-        let sec_tag: u32 = self.sec_tag.trim().parse()
-            .map_err(|_| format!("Invalid sec_tag: '{}'", self.sec_tag))?;
+        let sec_tag = tls_mode.sec_tag_value()?;
 
         let json = serde_json::json!({
             "nested": true,
@@ -155,7 +168,6 @@ impl MqttSettings {
 }
 
 // --- App ---
-
 struct App {
     // Connection (shared between tabs)
     port: String,
@@ -175,7 +187,10 @@ struct App {
 
     // --- MQTT settings tab ---
     mqtt: MqttSettings,
+    tls_mode: TlsMode,
+    mutual_tls_sec_tag: String,
     settings_state: Arc<Mutex<SettingsState>>,
+    advanced_mode: bool,
 }
 
 #[derive(PartialEq)]
@@ -201,7 +216,10 @@ impl App {
             sec_tag: 1,
             upload_state: Arc::new(Mutex::new(UploadState::Idle)),
             mqtt: MqttSettings::default(),
+            tls_mode: TlsMode::Tls,
+            mutual_tls_sec_tag: String::new(),
             settings_state: Arc::new(Mutex::new(SettingsState::Idle)),
+            advanced_mode: false,
         }
     }
 
@@ -339,6 +357,8 @@ impl eframe::App for App {
                         });
                     if self.device_type != prev_device {
                         self.mqtt = MqttSettings::default();
+                        self.tls_mode = TlsMode::Tls;
+                        self.mutual_tls_sec_tag = String::new();
                         *self.settings_state.lock().unwrap() = SettingsState::Idle;
                     }
                     ui.end_row();
@@ -352,6 +372,9 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.active_tab, Tab::Certificates, "🔒 TLS Certificates");
                 ui.selectable_value(&mut self.active_tab, Tab::MqttSettings, "⚙  MQTT Settings");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut self.advanced_mode, "Advanced mode");
+                });
             });
             ui.separator();
             ui.add_space(8.0);
@@ -368,20 +391,25 @@ impl App {
     fn show_certificates_tab(&mut self, ui: &mut egui::Ui, busy: bool) {
         let uploading = self.is_uploading();
 
-        // Security tag
-        ui.horizontal(|ui| {
-            ui.strong("Security tag:");
-            for tag in 1u8..=9 {
-                if ui.radio(self.sec_tag == tag, tag.to_string()).clicked() {
-                    self.sec_tag = tag;
-                    let mut s = self.upload_state.lock().unwrap();
-                    if matches!(*s, UploadState::Done | UploadState::Error(_)) {
-                        *s = UploadState::Idle;
+        // Security tag — only visible in advanced mode, defaults to 1
+        if !self.advanced_mode {
+            self.sec_tag = 1;
+        } else {
+            ui.horizontal(|ui| {
+                ui.strong("Security tag:");
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for tag in 1u8..=5 {
+                    if ui.radio(self.sec_tag == tag, tag.to_string()).clicked() {
+                        self.sec_tag = tag;
+                        let mut s = self.upload_state.lock().unwrap();
+                        if matches!(*s, UploadState::Done | UploadState::Error(_)) {
+                            *s = UploadState::Idle;
+                        }
                     }
                 }
-            }
-        });
-        ui.add_space(8.0);
+            });
+            ui.add_space(8.0);
+        }
 
         // File pickers
         egui::Grid::new("files_grid")
@@ -460,7 +488,7 @@ impl App {
                 ui.add(egui::ProgressBar::new(1.0).show_percentage());
                 ui.colored_label(
                     egui::Color32::from_rgb(80, 200, 80),
-                    format!("✔  All certificates uploaded successfully (sec_tag: {})", self.sec_tag),
+                    format!("✔  All certificates uploaded successfully"),
                 );
                 ui.label(format!("  /storage/ca_{}.crt", self.sec_tag));
                 ui.label(format!("  /storage/client_{}.crt", self.sec_tag));
@@ -481,14 +509,83 @@ impl App {
                 .spacing([8.0, 6.0])
                 .min_col_width(140.0)
                 .show(ui, |ui| {
-                    mqtt_row(ui, "DNS Address:",            &mut self.mqtt.dns_addr,        disabled);
-                    mqtt_row(ui, "IP Address:",             &mut self.mqtt.ipaddr,          disabled);
-                    mqtt_row(ui, "Port:",                   &mut self.mqtt.port,            disabled);
-                    mqtt_row(ui, "Security Tag:",           &mut self.mqtt.sec_tag,         disabled);
+                    mqtt_row(ui, "DNS Address:", &mut self.mqtt.dns_addr, disabled);
+
+                    // IP Address with info tooltip
+                    ui.strong("IP Address:");
+                    ui.horizontal(|ui| {
+                        ui.add_enabled(
+                            !disabled,
+                            egui::TextEdit::singleline(&mut self.mqtt.ipaddr).desired_width(270.0),
+                        );
+                        let info_id = egui::Id::new("ipaddr_info_popup");
+                        let info_resp = ui.label("ℹ")
+                            .on_hover_cursor(egui::CursorIcon::Help);
+                        if info_resp.clicked() {
+                            ui.memory_mut(|m| m.toggle_popup(info_id));
+                        }
+                        // Close popup when mouse leaves the icon
+                        if !info_resp.hovered() {
+                            ui.memory_mut(|m| {
+                                if m.is_popup_open(info_id) {
+                                    m.close_popup();
+                                }
+                            });
+                        }
+                        egui::popup_below_widget(ui, info_id, &info_resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                            ui.set_max_width(260.0);
+                            ui.label("When both DNS address and IP address are provided, the IP address takes priority and is used directly.");
+                        });
+                    });
+                    ui.end_row();
+
+                    mqtt_row(ui, "Port:", &mut self.mqtt.port, disabled);
+
+                    // Security Level selector
+                    ui.strong("Security Level:");
+                    ui.vertical(|ui| {
+                        let is_plain = matches!(self.tls_mode, TlsMode::PlainTcp);
+                        let is_tls   = matches!(self.tls_mode, TlsMode::Tls);
+                        let is_mtls  = matches!(self.tls_mode, TlsMode::MutualTls(_));
+
+                        if ui.radio(is_plain, "MQTT over plain TCP — no encryption").clicked() {
+                            self.tls_mode = TlsMode::PlainTcp;
+                        }
+                        if ui.radio(is_tls, "MQTT over TLS — encrypted").clicked() {
+                            self.tls_mode = TlsMode::Tls;
+                        }
+                        if ui.radio(is_mtls, "MQTT with mutual TLS — encrypted, requires certificates").clicked() {
+                            self.tls_mode = TlsMode::MutualTls(self.mutual_tls_sec_tag.clone());
+                        }
+                        // Sec tag radios — only in advanced mode, greyed out unless mutual TLS selected
+                        let mtls_active = matches!(self.tls_mode, TlsMode::MutualTls(_));
+                        if !self.advanced_mode {
+                            if mtls_active && self.mutual_tls_sec_tag.is_empty() {
+                                self.mutual_tls_sec_tag = "1".to_string();
+                                self.tls_mode = TlsMode::MutualTls("1".to_string());
+                            }
+                        } else {
+                            ui.add_enabled_ui(mtls_active, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Security tag:");
+                                    ui.spacing_mut().item_spacing.x = 2.0;
+                                    for tag in 1u8..=5 {
+                                        let selected = mtls_active && self.mutual_tls_sec_tag == tag.to_string();
+                                        if ui.radio(selected, tag.to_string()).clicked() {
+                                            self.mutual_tls_sec_tag = tag.to_string();
+                                            self.tls_mode = TlsMode::MutualTls(self.mutual_tls_sec_tag.clone());
+                                        }
+                                    }
+                                });
+                            });
+                        }
+                    });
+                    ui.end_row();
+
                     mqtt_row(ui, "Username:",               &mut self.mqtt.user_name,       disabled);
                     mqtt_row(ui, "Password:",               &mut self.mqtt.password,        disabled);
                     mqtt_row(ui, "Status topic:",           &mut self.mqtt.status_topic,    disabled);
-                    
+
                     match self.device_type {
                         DeviceType::DronetagTransmitter => {
                             mqtt_row(ui, "Telemetry topic:",        &mut self.mqtt.telemetry_topic, disabled);
@@ -548,7 +645,16 @@ impl App {
                     )
                     .clicked()
                 {
-                    match self.mqtt.to_json_string() {
+                    // In non-advanced mode, force sec_tag to 1
+                    let effective_tls_mode = if !self.advanced_mode {
+                        match &self.tls_mode {
+                            TlsMode::MutualTls(_) => TlsMode::MutualTls("1".to_string()),
+                            other => other.clone(),
+                        }
+                    } else {
+                        self.tls_mode.clone()
+                    };
+                    match self.mqtt.to_json_string(&effective_tls_mode) {
                         Err(e) => {
                             *self.settings_state.lock().unwrap() = SettingsState::Error(e);
                         }
@@ -577,6 +683,18 @@ impl App {
                             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
                                 if let Some(mqtt_val) = parsed.get("dt_trans_mqtt") {
                                     self.mqtt = MqttSettings::from_json(mqtt_val);
+                                    // Infer TLS mode from sec_tag returned by device
+                                    if let Some(tag) = mqtt_val.get("sec_tag").and_then(|v| v.as_i64()) {
+                                        self.tls_mode = match tag {
+                                            -1 => TlsMode::PlainTcp,
+                                            0  => TlsMode::Tls,
+                                            n  => {
+                                                let s = n.to_string();
+                                                self.mutual_tls_sec_tag = s.clone();
+                                                TlsMode::MutualTls(s)
+                                            }
+                                        };
+                                    }
                                 }
                             }
                         }
