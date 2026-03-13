@@ -680,21 +680,37 @@ impl App {
                     });
                     match result {
                         Ok(json) => {
-                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json) {
-                                if let Some(mqtt_val) = parsed.get("dt_trans_mqtt") {
-                                    self.mqtt = MqttSettings::from_json(mqtt_val);
-                                    // Infer TLS mode from sec_tag returned by device
-                                    if let Some(tag) = mqtt_val.get("sec_tag").and_then(|v| v.as_i64()) {
-                                        self.tls_mode = match tag {
-                                            -1 => TlsMode::PlainTcp,
-                                            0  => TlsMode::Tls,
-                                            n  => {
-                                                let s = n.to_string();
-                                                self.mutual_tls_sec_tag = s.clone();
-                                                TlsMode::MutualTls(s)
+                            match serde_json::from_str::<serde_json::Value>(&json) {
+                                Ok(parsed) => {
+                                    let has_cloud = parsed.get("dt_cloud").is_some();
+                                    let has_mqtt  = parsed.get("dt_trans_mqtt").is_some();
+
+                                    if !has_cloud || !has_mqtt {
+                                        *self.settings_state.lock().unwrap() = SettingsState::Error(
+                                            "Device does not support MQTT cloud connectivity. Please make sure you use correct device and its firmware is updated.".to_string()
+                                        );
+                                    } else {
+                                        if let Some(mqtt_val) = parsed.get("dt_trans_mqtt") {
+                                            self.mqtt = MqttSettings::from_json(mqtt_val);
+                                            // Infer TLS mode from sec_tag returned by device
+                                            if let Some(tag) = mqtt_val.get("sec_tag").and_then(|v| v.as_i64()) {
+                                                self.tls_mode = match tag {
+                                                    -1 => TlsMode::PlainTcp,
+                                                    0  => TlsMode::Tls,
+                                                    n  => {
+                                                        let s = n.to_string();
+                                                        self.mutual_tls_sec_tag = s.clone();
+                                                        TlsMode::MutualTls(s)
+                                                    }
+                                                };
                                             }
-                                        };
+                                        }
                                     }
+                                }
+                                Err(_) => {
+                                    *self.settings_state.lock().unwrap() = SettingsState::Error(
+                                        "Failed to parse settings response from device.".to_string()
+                                    );
                                 }
                             }
                         }
