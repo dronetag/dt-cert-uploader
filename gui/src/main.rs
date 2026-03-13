@@ -65,6 +65,7 @@ struct MqttSettings {
     status_topic: String,
     f_start_topic: String,
     f_end_topic: String,
+    dri_topic: String,
     r_start_topic: String,
     r_end_topic: String,
 }
@@ -72,18 +73,19 @@ struct MqttSettings {
 impl Default for MqttSettings {
     fn default() -> Self {
         Self {
-            dns_addr: "dt-hub-2.azure-devices.net".to_string(),
+            dns_addr: String::new(),
             ipaddr: String::new(),
-            port: "8883".to_string(),
-            sec_tag: "1".to_string(),
+            port: String::new(),
+            sec_tag: String::new(),
             user_name: String::new(),
             password: String::new(),
-            telemetry_topic: "device/%s/telem".to_string(),
-            status_topic: "device/%s/status".to_string(),
-            f_start_topic: "device/%s/f_start".to_string(),
-            f_end_topic: "device/%s/f_end".to_string(),
-            r_start_topic: "device/%s/r_start".to_string(),
-            r_end_topic: "device/%s/r_end".to_string(),
+            telemetry_topic: String::new(),
+            status_topic: String::new(),
+            f_start_topic: String::new(),
+            f_end_topic: String::new(),
+            dri_topic: String::new(),
+            r_start_topic: String::new(),
+            r_end_topic: String::new(),
         }
     }
 }
@@ -103,18 +105,19 @@ impl MqttSettings {
         };
 
         Self {
-            dns_addr:        get_str("dns_addr",        "dt-hub-2.azure-devices.net"),
+            dns_addr:        get_str("dns_addr",        ""),
             ipaddr:          get_str("ipaddr",          ""),
-            port:            get_num("port",            "8883"),
-            sec_tag:         get_num("sec_tag",         "1"),
+            port:            get_num("port",            ""),
+            sec_tag:         get_num("sec_tag",         ""),
             user_name:       get_str("user_name",       ""),
             password:        get_str("password",        ""),
-            telemetry_topic: get_str("telemetry_topic", "device/%s/telem"),
-            status_topic:    get_str("status_topic",    "device/%s/status"),
-            f_start_topic:   get_str("f_start_topic",   "device/%s/f_start"),
-            f_end_topic:     get_str("f_end_topic",     "device/%s/f_end"),
-            r_start_topic:   get_str("r_start_topic",   "device/%s/r_start"),
-            r_end_topic:     get_str("r_end_topic",     "device/%s/r_end"),
+            telemetry_topic: get_str("telemetry_topic", ""),
+            status_topic:    get_str("status_topic",    ""),
+            f_start_topic:   get_str("f_start_topic",   ""),
+            f_end_topic:     get_str("f_end_topic",     ""),
+            dri_topic:       get_str("dri_topic",       ""),
+            r_start_topic:   get_str("r_start_topic",   ""),
+            r_end_topic:     get_str("r_end_topic",     ""),
         }
     }
 
@@ -141,6 +144,7 @@ impl MqttSettings {
                 "status_topic":    self.status_topic.trim(),
                 "f_start_topic":   self.f_start_topic.trim(),
                 "f_end_topic":     self.f_end_topic.trim(),
+                "dri_topic":       self.dri_topic.trim(),
                 "r_start_topic":   self.r_start_topic.trim(),
                 "r_end_topic":     self.r_end_topic.trim(),
             }
@@ -310,6 +314,7 @@ impl eframe::App for App {
                     ui.end_row();
 
                     ui.strong("Device:");
+                    let prev_device = self.device_type;
                     egui::ComboBox::from_id_salt("device_combo")
                         .selected_text(format!(
                             "{} (0x{:02X}, {} baud)",
@@ -332,6 +337,10 @@ impl eframe::App for App {
                                 );
                             }
                         });
+                    if self.device_type != prev_device {
+                        self.mqtt = MqttSettings::default();
+                        *self.settings_state.lock().unwrap() = SettingsState::Idle;
+                    }
                     ui.end_row();
                 });
 
@@ -472,18 +481,27 @@ impl App {
                 .spacing([8.0, 6.0])
                 .min_col_width(140.0)
                 .show(ui, |ui| {
-                    mqtt_row(ui, "DNS Address:",       &mut self.mqtt.dns_addr,        disabled);
-                    mqtt_row(ui, "IP Address:",        &mut self.mqtt.ipaddr,          disabled);
-                    mqtt_row(ui, "Port:",              &mut self.mqtt.port,            disabled);
-                    mqtt_row(ui, "Security Tag:",      &mut self.mqtt.sec_tag,         disabled);
-                    mqtt_row(ui, "Username:",          &mut self.mqtt.user_name,       disabled);
-                    mqtt_row(ui, "Password:",          &mut self.mqtt.password,        disabled);
-                    mqtt_row(ui, "Telemetry Topic:",   &mut self.mqtt.telemetry_topic, disabled);
-                    mqtt_row(ui, "Status Topic:",      &mut self.mqtt.status_topic,    disabled);
-                    mqtt_row(ui, "F-Start Topic:",     &mut self.mqtt.f_start_topic,   disabled);
-                    mqtt_row(ui, "F-End Topic:",       &mut self.mqtt.f_end_topic,     disabled);
-                    mqtt_row(ui, "R-Start Topic:",     &mut self.mqtt.r_start_topic,   disabled);
-                    mqtt_row(ui, "R-End Topic:",       &mut self.mqtt.r_end_topic,     disabled);
+                    mqtt_row(ui, "DNS Address:",            &mut self.mqtt.dns_addr,        disabled);
+                    mqtt_row(ui, "IP Address:",             &mut self.mqtt.ipaddr,          disabled);
+                    mqtt_row(ui, "Port:",                   &mut self.mqtt.port,            disabled);
+                    mqtt_row(ui, "Security Tag:",           &mut self.mqtt.sec_tag,         disabled);
+                    mqtt_row(ui, "Username:",               &mut self.mqtt.user_name,       disabled);
+                    mqtt_row(ui, "Password:",               &mut self.mqtt.password,        disabled);
+                    mqtt_row(ui, "Status topic:",           &mut self.mqtt.status_topic,    disabled);
+                    
+                    match self.device_type {
+                        DeviceType::DronetagTransmitter => {
+                            mqtt_row(ui, "Telemetry topic:",        &mut self.mqtt.telemetry_topic, disabled);
+                            mqtt_row(ui, "Flight Start topic:",     &mut self.mqtt.f_start_topic,   disabled);
+                            mqtt_row(ui, "Flight End topic:",       &mut self.mqtt.f_end_topic,     disabled);
+                        }
+
+                        DeviceType::DronetagRider => {
+                            mqtt_row(ui, "DRI topic:",              &mut self.mqtt.dri_topic,       disabled);
+                            mqtt_row(ui, "Recording Start topic:",  &mut self.mqtt.r_start_topic,   disabled);
+                            mqtt_row(ui, "Recording End topic:",    &mut self.mqtt.r_end_topic,     disabled);
+                        }
+                    }
                 });
 
             ui.add_space(12.0);
