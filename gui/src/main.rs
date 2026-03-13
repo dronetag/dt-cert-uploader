@@ -13,7 +13,7 @@ use std::time::Instant;
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Dronetag Certificate Upload")
+            .with_title("Dronetag MQTT Cloud Config")
             .with_inner_size([520.0, 520.0])
             .with_min_inner_size([520.0, 520.0]),
         ..Default::default()
@@ -137,7 +137,7 @@ impl MqttSettings {
 
     fn to_json_string(&self, tls_mode: &TlsMode) -> Result<String, String> {
         let port: u16 = self.port.trim().parse()
-            .map_err(|_| format!("Invalid port number: '{}'", self.port))?;
+            .map_err(|_| format!("Setting invalid port number: \"{}\"", self.port))?;
         let sec_tag = tls_mode.sec_tag_value()?;
 
         let json = serde_json::json!({
@@ -309,7 +309,6 @@ impl eframe::App for App {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Dronetag Certificate Upload");
             ui.add_space(8.0);
 
             let busy = self.is_uploading() || self.is_settings_busy();
@@ -323,7 +322,7 @@ impl eframe::App for App {
                     ui.strong("Serial port:");
                     egui::ComboBox::from_id_salt("port_combo")
                         .selected_text(&self.port)
-                        .width(260.0)
+                        .width(280.0)
                         .show_ui(ui, |ui| {
                             for p in &self.available_ports {
                                 ui.selectable_value(&mut self.port, p.clone(), p);
@@ -340,7 +339,7 @@ impl eframe::App for App {
                             self.device_type.mux_addr(),
                             self.device_type.baud_rate()
                         ))
-                        .width(260.0)
+                        .width(280.0)
                         .show_ui(ui, |ui| {
                             for d in DeviceType::all() {
                                 ui.selectable_value(
