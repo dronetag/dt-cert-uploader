@@ -156,10 +156,16 @@ impl MuxSlipSerial {
 
     /// Write settings by sending a JSON string to the settings mux address.
     pub fn write_settings(port_name: &str, device_type: &DeviceType, json: &str) -> Result<(), String> {
-        let port = serialport::new(port_name, device_type.baud_rate())
+        let mut port = serialport::new(port_name, device_type.baud_rate())
             .timeout(Duration::from_secs(4))
             .open()
             .map_err(|e| format!("Failed to open serial port '{}': {}", port_name, e))?;
+
+        // Transmitter requires DTR and RTS signals asserted for serial communication on Windows
+        if *device_type == DeviceType::DronetagTransmitter {
+            let _ = port.write_data_terminal_ready(true);
+            let _ = port.write_request_to_send(true);
+        }
 
         let mut slip = MuxSlipSerial::new(port, device_type.settings_mux_addr());
 
@@ -298,10 +304,16 @@ pub fn upload_certificates(
     validate_cert_files(params)?;
 
     // Use a short open timeout so we fail fast on wrong/busy ports
-    let port = serialport::new(&params.port, params.device_type.baud_rate())
+    let mut port = serialport::new(&params.port, params.device_type.baud_rate())
         .timeout(Duration::from_secs(2))
         .open()
         .map_err(|e| format!("Failed to open serial port '{}': {}", params.port, e))?;
+    
+        // Transmitter requires DTR and RTS signals asserted for serial communication on Windows
+        if params.device_type == DeviceType::DronetagTransmitter {
+            let _ = port.write_data_terminal_ready(true);
+            let _ = port.write_request_to_send(true);
+        }
 
     let client = MCUmgrClient::new_from_serial(
         MuxSlipSerial::new(port, params.device_type.mux_addr())
@@ -369,10 +381,16 @@ pub fn list_serial_ports() -> Vec<String> {
 /// Read device settings by sending an empty JSON `{}` to the settings mux address
 /// and reassembling the JSON response (which may span multiple SLIP frames).
 pub fn read_settings(port_name: &str, device_type: &DeviceType) -> Result<String, String> {
-    let port = serialport::new(port_name, device_type.baud_rate())
+    let mut port = serialport::new(port_name, device_type.baud_rate())
         .timeout(Duration::from_secs(4))
         .open()
         .map_err(|e| format!("Failed to open serial port '{}': {}", port_name, e))?;
+
+        // Transmitter requires DTR and RTS signals asserted for serial communication on Windows
+        if *device_type == DeviceType::DronetagTransmitter {
+            let _ = port.write_data_terminal_ready(true);
+            let _ = port.write_request_to_send(true);
+        }
 
     let settings_mux_addr = device_type.settings_mux_addr();
     let mut slip = MuxSlipSerial::new(port, settings_mux_addr);
@@ -423,10 +441,16 @@ pub fn read_settings(port_name: &str, device_type: &DeviceType) -> Result<String
 
 /// Write settings by sending a JSON string to the settings mux address.
 pub fn write_settings(port_name: &str, device_type: &DeviceType, json: &str) -> Result<(), String> {
-    let port = serialport::new(port_name, device_type.baud_rate())
+    let mut port = serialport::new(port_name, device_type.baud_rate())
         .timeout(Duration::from_secs(4))
         .open()
         .map_err(|e| format!("Failed to open serial port '{}': {}", port_name, e))?;
+
+        // Transmitter requires DTR and RTS signals asserted for serial communication on Windows
+        if *device_type == DeviceType::DronetagTransmitter {
+            let _ = port.write_data_terminal_ready(true);
+            let _ = port.write_request_to_send(true);
+        }
 
     let mut slip = MuxSlipSerial::new(port, device_type.settings_mux_addr());
 
