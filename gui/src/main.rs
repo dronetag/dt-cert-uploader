@@ -6,7 +6,7 @@ use std::thread;
 use eframe::egui;
 use dt_cert_uploader_core::{
     list_serial_ports, upload_certificates, validate_cert_files, read_settings, write_settings,
-    DeviceType, UploadParams, UploadProgress,
+    check_license, upload_license, DeviceType, UploadParams, UploadProgress,
 };
 use std::time::Instant;
 
@@ -47,6 +47,18 @@ enum SettingsState {
     Idle,
     Busy,
     Done,
+    Error(String),
+}
+
+
+// --- License state ---
+#[derive(Clone, PartialEq)]
+enum LicenseState {
+    Idle,
+    Busy,
+    Present,
+    Missing,
+    Uploaded,
     Error(String),
 }
 
@@ -191,12 +203,15 @@ struct App {
     mutual_tls_sec_tag: String,
     settings_state: Arc<Mutex<SettingsState>>,
     advanced_mode: bool,
+    license_path: String,
+    license_state: Arc<Mutex<LicenseState>>,
 }
 
 #[derive(PartialEq)]
 enum Tab {
     Certificates,
     MqttSettings,
+    License,
 }
 
 impl App {
@@ -220,6 +235,8 @@ impl App {
             mutual_tls_sec_tag: String::new(),
             settings_state: Arc::new(Mutex::new(SettingsState::Idle)),
             advanced_mode: false,
+            license_path: String::new(),
+            license_state: Arc::new(Mutex::new(LicenseState::Idle)),
         }
     }
 
@@ -371,6 +388,7 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.active_tab, Tab::Certificates, "🔒 TLS Certificates");
                 ui.selectable_value(&mut self.active_tab, Tab::MqttSettings, "⚙  MQTT Settings");
+                ui.selectable_value(&mut self.active_tab, Tab::License, "📄  License");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.checkbox(&mut self.advanced_mode, "Advanced mode");
                 });
@@ -381,6 +399,7 @@ impl eframe::App for App {
             match self.active_tab {
                 Tab::Certificates => self.show_certificates_tab(ui, busy),
                 Tab::MqttSettings => self.show_mqtt_tab(ui, busy, ctx),
+                Tab::License => self.show_license_tab(ui, busy),
             }
         });
     }
@@ -737,6 +756,134 @@ impl App {
             }
         });
     }
+    fn show_license_tab(&mut self, ui: &mut egui::Ui, busy: bool) {
+        let license_busy = matches!(*self.license_state.lock().unwrap(), LicenseState::Busy);
+        let disabled = busy || license_busy;
+
+        ui.add_space(4.0);
+
+        // --- Check license ---
+        ui.strong("Check License presence");
+        ui.add_space(4.0);
+        if ui
+            .add_enabled(
+                !disabled && !self.port.is_empty(),
+                egui::Button::new("🔍  Check License").min_size(egui::vec2(160.0, 32.0)),
+            )
+            .clicked()
+        {
+            *self.license_state.lock().unwrap() = LicenseState::Busy;
+            let port = self.port.clone();
+            let device_type = self.device_type;
+            let state: Arc<Mutex<LicenseState>> = Arc::clone(&self.license_state);
+
+            thread::spawn(move || {
+                let result = check_license(&port, &device_type);
+                let mut s = state.lock().unwrap();
+                *s = match result {
+                    Ok(true)  => LicenseState::Present,
+                    Ok(false) => LicenseState::Missing,
+                    Err(e)    => LicenseState::Error(e),
+                };
+            });
+        }
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // --- Upload license ---
+        ui.strong("Upload license file");
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            ui.strong("License file:");
+            ui.add_enabled(
+                !disabled,
+                egui::TextEdit::singleline(&mut self.license_path)
+                    .desired_width(240.0)
+                    .hint_text("No file selected"),
+            );
+            if ui.add_enabled(!disabled, egui::Button::new("Browse…")).clicked() {
+                if let Some(file) = rfd::FileDialog::new()
+                    .add_filter("License file", &["json", "license"])
+                    .add_filter("All files", &["*"])
+                    .pick_file()
+                {
+                    self.license_path = file.to_string_lossy().to_string();
+                    let mut s = self.license_state.lock().unwrap();
+                    if matches!(*s, LicenseState::Uploaded | LicenseState::Error(_)) {
+                        *s = LicenseState::Idle;
+                    }
+                }
+            }
+        });
+
+        ui.add_space(8.0);
+
+        let ready = !disabled && !self.port.is_empty() && !self.license_path.is_empty();
+        if ui
+            .add_enabled(
+                ready,
+                egui::Button::new("⬆  Upload License").min_size(egui::vec2(160.0, 32.0)),
+            )
+            .clicked()
+        {
+            *self.license_state.lock().unwrap() = LicenseState::Busy;
+            let port = self.port.clone();
+            let device_type = self.device_type;
+            let path = self.license_path.clone();
+            let state: Arc<Mutex<LicenseState>> = Arc::clone(&self.license_state);
+
+            thread::spawn(move || {
+                let result = upload_license(&port, &device_type, &path, |_transferred, _total| true);
+                let mut s = state.lock().unwrap();
+                *s = match result {
+                    Ok(())  => LicenseState::Uploaded,
+                    Err(e)  => LicenseState::Error(e),
+                };
+            });
+        }
+
+        ui.add_space(8.0);
+
+        // --- Status area ---
+        let state = self.license_state.lock().unwrap().clone();
+        match state {
+            LicenseState::Idle => {}
+            LicenseState::Busy => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Communicating with device...");
+                });
+            }
+            LicenseState::Present => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(80, 200, 80),
+                    "✔  License file is present on the device.",
+                );
+            }
+            LicenseState::Missing => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 180, 40),
+                    "⚠  No license file found on the device.",
+                );
+            }
+            LicenseState::Uploaded => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(80, 200, 80),
+                    format!("✔  License uploaded successfully to {}", "/storage/license.json"),
+                );
+            }
+            LicenseState::Error(msg) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 80, 80),
+                    format!("✖  Error: {}", msg),
+                );
+            }
+        }
+    }
+
 }
 
 fn file_row(ui: &mut egui::Ui, label: &str, path: &mut String, filter: &str, disabled: bool) {

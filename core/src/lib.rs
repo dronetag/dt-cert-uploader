@@ -473,3 +473,105 @@ pub fn write_settings(port_name: &str, device_type: &DeviceType, json: &str) -> 
 
     Ok(())
 }
+
+const LICENSE_REMOTE_PATH: &str = "/storage/license.json";
+const MAX_LICENSE_FILE_SIZE: u64 = 4 * 1024;
+
+/// Check if the license file exists on the device.
+/// Returns Ok(true) if it exists, Ok(false) if it does not, Err on communication failure.
+pub fn check_license(port_name: &str, device_type: &DeviceType) -> Result<bool, String> {
+    let mut port = serialport::new(port_name, device_type.baud_rate())
+        .timeout(Duration::from_secs(4))
+        .open()
+        .map_err(|e| format!("Failed to open serial port '{}': {}", port_name, e))?;
+
+    if *device_type == DeviceType::DronetagTransmitter {
+        let _ = port.write_data_terminal_ready(true);
+        let _ = port.write_request_to_send(true);
+    }
+
+    let client = MCUmgrClient::new_from_serial(
+        MuxSlipSerial::new(port, device_type.mux_addr())
+    );
+
+    client.set_retries(0);
+    client.set_timeout(Duration::from_secs(4))
+        .unwrap_or_else(|e| eprintln!("Warning: could not set timeout: {}", e));
+
+    client.use_auto_frame_size().map_err(|e| {
+        format!("Device did not respond (wrong port, device type, or mux address?): {}", e)
+    })?;
+
+    match client.fs_file_status(LICENSE_REMOTE_PATH) {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            let msg = e.to_string();
+            // MCUmgr returns a "not found" / file not found error when file doesn't exist
+            if msg.to_lowercase().contains("not found")
+                || msg.to_lowercase().contains("no such")
+                || msg.contains("2")  // MCUmgr ENOENT error code
+            {
+                Ok(false)
+            } else {
+                Err(format!("Failed to query license file: {}", msg))
+            }
+        }
+    }
+}
+
+/// Upload a license file to the device at /storage/license.json.
+pub fn upload_license(
+    port_name: &str,
+    device_type: &DeviceType,
+    local_path: &str,
+    mut progress_cb: impl FnMut(u64, u64) -> bool,
+) -> Result<(), String> {
+    let data = std::fs::read(local_path)
+        .map_err(|e| format!("Failed to read license file '{}': {}", local_path, e))?;
+
+    if data.is_empty() {
+        return Err("License file is empty".to_string());
+    }
+    if data.len() as u64 > MAX_LICENSE_FILE_SIZE {
+        return Err(format!(
+            "License file is too large ({} bytes, maximum is {} bytes / {} KB)",
+            data.len(), MAX_LICENSE_FILE_SIZE, MAX_LICENSE_FILE_SIZE / 1024
+        ));
+    }
+
+    let mut port = serialport::new(port_name, device_type.baud_rate())
+        .timeout(Duration::from_secs(4))
+        .open()
+        .map_err(|e| format!("Failed to open serial port '{}': {}", port_name, e))?;
+
+    if *device_type == DeviceType::DronetagTransmitter {
+        let _ = port.write_data_terminal_ready(true);
+        let _ = port.write_request_to_send(true);
+    }
+
+    let client = MCUmgrClient::new_from_serial(
+        MuxSlipSerial::new(port, device_type.mux_addr())
+    );
+
+    client.set_retries(0);
+    client.set_timeout(Duration::from_secs(4))
+        .unwrap_or_else(|e| eprintln!("Warning: could not set timeout: {}", e));
+
+    client.use_auto_frame_size().map_err(|e| {
+        format!("Device did not respond (wrong port, device type, or mux address?): {}", e)
+    })?;
+
+    let size = data.len() as u64;
+    let reader = std::io::Cursor::new(data);
+
+    client
+        .fs_file_upload(
+            LICENSE_REMOTE_PATH,
+            reader,
+            size,
+            Some(&mut |transferred, total| progress_cb(transferred, total)),
+        )
+        .map_err(|e| format!("Failed to upload license: {}", e))?;
+
+    Ok(())
+}
