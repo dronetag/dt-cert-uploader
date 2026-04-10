@@ -20,6 +20,8 @@ The release archives also include the CLI executable if you prefer scripting or 
 This Rust project contains a cross-platform GUI application for:
 
 - Uploading TLS certificate files to supported Dronetag devices
+- Checking whether a Dronetag license is already present on the device
+- Uploading a Dronetag license file to the device
 - Reading current MQTT-related settings from the device
 - Writing MQTT broker configuration back to the device
 - Switching between plain MQTT, TLS, and mutual TLS modes
@@ -58,7 +60,7 @@ For mutual TLS, the app uploads the certificate bundle expected by the device mo
 
 ## Main workflows
 
-The GUI is split into two tabs:
+The GUI is split into three tabs:
 
 ### 1. TLS Certificates
 
@@ -87,6 +89,22 @@ The `MQTT Settings` tab is used to point the device at your broker and define ho
 
 > [!NOTE]
 > A good workflow is to use `Read Settings` before making changes, then `Write Settings`, and finally `Read Settings` again to verify the values stored on the device.
+
+### 3. License
+
+![License tab](images/license_tab.png)
+
+Checks for the device license and uploads a new one when needed.
+
+The `License` tab checks for a license file in device storage and uploads one when needed. Use `Check License` to test whether `/storage/license.json` is present on the device, then select your local license file and click `Upload License` if the device reports that the file is missing.
+
+> [!NOTE]
+> `Check License` only confirms file presence. It does not validate the license content or whether the license is usable.
+> License validation is performed by the device itself.
+> License files are uploaded to `/storage/license.json`.
+> The GUI accepts files selected via the file picker with `.json` and `.license` filters.
+> License files must be non-empty and at most 4 KB.
+> A practical workflow is to run `Check License` before uploading, upload the file if needed, and then run `Check License` again to confirm the file is now present on the device.
 
 The app manages:
 
@@ -123,10 +141,11 @@ The app supports these MQTT security modes:
 
 Dronetag Toolbox can configure MQTT-related settings, but certificate upload is not currently supported there. That means full mutual TLS setup requires this desktop app.
 
-This tool fills that gap by providing both:
+This tool fills that gap by providing:
 
 - Device-side MQTT settings configuration
 - TLS certificate upload over serial
+- Device license presence check and license upload
 
 ## Workspace layout
 
@@ -243,6 +262,12 @@ dt-cert-uploader-cli \
 > Access to the MQTT client on Dronetag devices requires a valid Dronetag license.
 > Device-side MQTT configuration alone is not sufficient if the license is missing.
 
+> [!NOTE]
+> Manual license upload is optional.
+> Normally, the device can download its license automatically from the MQTT broker if it does not already have one stored.
+> On boot, the device will try to acquire a license when needed by subscribing to `v1/device/<device_serial_number>/license`.
+> The MQTT server or broker side is responsible for publishing the license file there, typically as a retained MQTT message so the device receives it immediately after subscribing.
+
 For a new MQTT integration, the recommended order is:
 
 1. Connect the device over USB and select the correct serial port and device type.
@@ -253,6 +278,7 @@ For a new MQTT integration, the recommended order is:
 6. Make sure the selected `sec_tag` in MQTT settings matches the uploaded certificate set.
 7. Write settings to the device.
 8. Read settings again to confirm the values were applied.
+9. If you need to provision the license manually instead of delivering it from the MQTT broker, open `License`, use `Check License` to see whether `/storage/license.json` is already present, upload the file if needed, and run `Check License` again to confirm the file now exists on the device.
 
 ## Implementation notes
 
@@ -269,4 +295,3 @@ For a new MQTT integration, the recommended order is:
 - The device must expose the required `dt_cloud` and `dt_trans_mqtt` settings groups
 - Certificate files must fit within the device-side size constraints enforced by this app
 - The application configures the device only; broker reachability, certificates, topic handling, and license serving must be handled on the server side
-
