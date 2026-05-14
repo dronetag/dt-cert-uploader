@@ -39,11 +39,13 @@ The application works with the MQTT cloud transport settings exposed by Dronetag
 - TLS security mode
 - TLS security tag for certificate association
 
-For mutual TLS, the app uploads the certificate bundle expected by the device modem storage:
+The app uploads whichever certificate files are selected to the device modem storage. Only the files you provide are uploaded:
 
 - `CA Certificate` -> `/storage/ca_<sec_tag>.crt`
-- `Client Certificate` -> `/storage/client_<sec_tag>.crt`
-- `Client Private Key` -> `/storage/client_<sec_tag>.key`
+- `Client Certificate` -> `/storage/client_<sec_tag>.crt` *(optional)*
+- `Client Private Key` -> `/storage/client_<sec_tag>.key` *(optional)*
+
+At least one file must be selected to enable the upload button.
 
 ## Supported devices
 
@@ -66,13 +68,13 @@ The GUI is split into three tabs:
 
 ![TLS Certificates tab](images/tls_certificates_tab.png)
 
-Uploads the three certificate files required for mutual TLS:
+Uploads TLS certificate files to the device modem storage. Supported combinations:
 
-- CA certificate
-- Client certificate
-- Client private key
+- **CA certificate only** — sufficient for TLS with CA verification (port `8883`)
+- **CA certificate + Client certificate + Client private key** — required for full mutual TLS (port `8884`)
+- Any single file or subset can be uploaded independently
 
-The `TLS Certificates` tab is the place to prepare the device for mutual TLS authentication. Select the serial port and device type at the top, choose the three PEM-encoded certificate files, and upload them to the modem storage. In the default mode, the app uses security tag `1`; in Advanced mode, you can select a different security tag so multiple TLS contexts can coexist on the same device.
+Select the serial port and device type at the top, choose one or more PEM-encoded certificate files, and click Upload. Only the files you have selected are sent to the device. In the default mode, the app uses security tag `1`; in Advanced mode, you can select a different security tag so multiple TLS contexts can coexist on the same device.
 
 > [!NOTE]
 > PEM-encoded X.509 files are expected. Typical file extensions are `.crt`, `.cer`, `.pem`, and `.key`.
@@ -121,25 +123,24 @@ This activates the MQTT transport client and persists the settings on the device
 
 ## Security modes
 
-The app supports these MQTT security modes:
+The app supports two MQTT security modes, selected in the `MQTT Settings` tab:
 
-- Plain TCP
-  - `sec_tag = -1`
-  - For unencrypted MQTT, commonly on port `1883`
-- TLS
-  - `sec_tag = 0`
-  - For encrypted MQTT without client certificates, commonly on port `8883`
-- Mutual TLS
-  - `sec_tag > 0`
-  - For encrypted MQTT with client certificate authentication, commonly on port `8884`
+- **Plain TCP** (`sec_tag = -1`)
+  - Unencrypted MQTT, typically on port `1883`
+  - No certificates required
+- **TLS / Mutual TLS** (`sec_tag > 0`)
+  - Encrypted connection; the specific mode depends on which certificates are uploaded to the device:
+    - *CA certificate only* → TLS with CA verification, typically on port `8883`
+    - *CA certificate + client certificate + client private key* → full mutual TLS (mTLS), typically on port `8884`
 
 > [!IMPORTANT]
-> The selected security tag in MQTT settings must match the security tag used for uploaded certificate files.
-> If Advanced mode is disabled, the GUI defaults to security tag `1` for mutual TLS.
+> `sec_tag = 0` is no longer valid. The device firmware requires CA certificate verification for any TLS connection, and certificates are indexed by sec_tag — so `sec_tag > 0` must be used.
+> The security tag in MQTT Settings must match the security tag used when uploading certificates.
+> If Advanced mode is disabled, the GUI defaults to security tag `1`.
 
 ## Why this tool exists
 
-Dronetag Toolbox can configure MQTT-related settings, but certificate upload is not currently supported there. That means full mutual TLS setup requires this desktop app.
+Dronetag Toolbox can configure MQTT-related settings, but TLS certificate upload is not currently supported there. That means any TLS connection (CA-only or full mTLS) requires this desktop app to upload the certificate files.
 
 This tool fills that gap by providing:
 
@@ -226,7 +227,17 @@ Basic help:
 dt-cert-uploader-cli --help
 ```
 
-Upload certificate bundle:
+Upload CA certificate only (TLS with CA verification, port `8883`):
+
+```bash
+dt-cert-uploader-cli \
+  --port /dev/ttyACM0 \
+  --device transmitter \
+  --sec-tag 1 \
+  --ca ca.crt
+```
+
+Upload full certificate bundle (mutual TLS, port `8884`):
 
 ```bash
 dt-cert-uploader-cli \
@@ -237,6 +248,8 @@ dt-cert-uploader-cli \
   --client-cert client.crt \
   --client-key client.key
 ```
+
+At least one of `--ca`, `--client-cert`, or `--client-key` must be provided. Only the supplied files are uploaded.
 
 Read current MQTT settings:
 
@@ -273,9 +286,11 @@ For a new MQTT integration, the recommended order is:
 1. Connect the device over USB and select the correct serial port and device type.
 2. Open `MQTT Settings` and use `Read Settings` to load the current configuration.
 3. Configure broker address, port, credentials, and topics.
-4. Choose the required security mode.
-5. If using mutual TLS, upload the CA certificate, client certificate, and private key in `TLS Certificates`.
-6. Make sure the selected `sec_tag` in MQTT settings matches the uploaded certificate set.
+4. Choose the required security mode (`sec_tag > 0` for any TLS connection).
+5. Upload the required certificates in `TLS Certificates`:
+   - For TLS with CA verification (port `8883`): upload the CA certificate only.
+   - For mutual TLS (port `8884`): upload the CA certificate, client certificate, and client private key.
+6. Make sure the selected `sec_tag` in MQTT Settings matches the security tag used when uploading the certificates.
 7. Write settings to the device.
 8. Read settings again to confirm the values were applied.
 9. If you need to provision the license manually instead of delivering it from the MQTT broker, open `License`, use `Check License` to see whether `/storage/license.json` is already present, upload the file if needed, and run `Check License` again to confirm the file now exists on the device.
