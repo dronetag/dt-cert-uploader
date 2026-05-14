@@ -67,16 +67,15 @@ enum LicenseState {
 #[derive(Clone, PartialEq)]
 enum TlsMode {
     PlainTcp,          // sec_tag = -1
-    Tls,               // sec_tag = 0
-    MutualTls(String), // sec_tag = user-supplied number
+    Tls(String),       // sec_tag > 0, CA cert only
+    MutualTls(String), // sec_tag > 0, CA + client cert + key
 }
 
 impl TlsMode {
     fn sec_tag_value(&self) -> Result<i32, String> {
         match self {
             TlsMode::PlainTcp => Ok(-1),
-            TlsMode::Tls => Ok(0),
-            TlsMode::MutualTls(s) => s.trim().parse::<i32>()
+            TlsMode::Tls(s) | TlsMode::MutualTls(s) => s.trim().parse::<i32>()
                 .map_err(|_| format!("Invalid security tag: '{}'", s)),
         }
     }
@@ -232,7 +231,7 @@ impl App {
             sec_tag: 1,
             upload_state: Arc::new(Mutex::new(UploadState::Idle)),
             mqtt: MqttSettings::default(),
-            tls_mode: TlsMode::Tls,
+            tls_mode: TlsMode::Tls(String::new()),
             mutual_tls_sec_tag: String::new(),
             settings_state: Arc::new(Mutex::new(SettingsState::Idle)),
             advanced_mode: false,
@@ -375,7 +374,7 @@ impl eframe::App for App {
                         });
                     if self.device_type != prev_device {
                         self.mqtt = MqttSettings::default();
-                        self.tls_mode = TlsMode::Tls;
+                        self.tls_mode = TlsMode::Tls(String::new());
                         self.mutual_tls_sec_tag = String::new();
                         *self.settings_state.lock().unwrap() = SettingsState::Idle;
                     }
@@ -563,35 +562,42 @@ impl App {
                     ui.strong("Security Level:");
                     ui.vertical(|ui| {
                         let is_plain = matches!(self.tls_mode, TlsMode::PlainTcp);
-                        let is_tls   = matches!(self.tls_mode, TlsMode::Tls);
+                        let is_tls   = matches!(self.tls_mode, TlsMode::Tls(_));
                         let is_mtls  = matches!(self.tls_mode, TlsMode::MutualTls(_));
 
                         if ui.radio(is_plain, "MQTT over plain TCP — no encryption").clicked() {
                             self.tls_mode = TlsMode::PlainTcp;
                         }
-                        if ui.radio(is_tls, "MQTT over TLS — encrypted").clicked() {
-                            self.tls_mode = TlsMode::Tls;
+                        if ui.radio(is_tls, "MQTT over TLS — encrypted, CA cert required").clicked() {
+                            self.tls_mode = TlsMode::Tls(self.mutual_tls_sec_tag.clone());
                         }
                         if ui.radio(is_mtls, "MQTT with mutual TLS — encrypted, requires certificates").clicked() {
                             self.tls_mode = TlsMode::MutualTls(self.mutual_tls_sec_tag.clone());
                         }
-                        // Sec tag radios — only in advanced mode, greyed out unless mutual TLS selected
-                        let mtls_active = matches!(self.tls_mode, TlsMode::MutualTls(_));
+                        // Sec tag radios — only in advanced mode, greyed out unless TLS or mTLS selected
+                        let tls_or_mtls_active = matches!(self.tls_mode, TlsMode::Tls(_) | TlsMode::MutualTls(_));
                         if !self.advanced_mode {
-                            if mtls_active && self.mutual_tls_sec_tag.is_empty() {
+                            if tls_or_mtls_active && self.mutual_tls_sec_tag.is_empty() {
                                 self.mutual_tls_sec_tag = "1".to_string();
-                                self.tls_mode = TlsMode::MutualTls("1".to_string());
+                                self.tls_mode = match &self.tls_mode {
+                                    TlsMode::Tls(_) => TlsMode::Tls("1".to_string()),
+                                    _               => TlsMode::MutualTls("1".to_string()),
+                                };
                             }
                         } else {
-                            ui.add_enabled_ui(mtls_active, |ui| {
+                            ui.add_enabled_ui(tls_or_mtls_active, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label("Security tag:");
                                     ui.spacing_mut().item_spacing.x = 2.0;
                                     for tag in 1u8..=5 {
-                                        let selected = mtls_active && self.mutual_tls_sec_tag == tag.to_string();
+                                        let tag_str = tag.to_string();
+                                        let selected = tls_or_mtls_active && self.mutual_tls_sec_tag == tag_str;
                                         if ui.radio(selected, tag.to_string()).clicked() {
-                                            self.mutual_tls_sec_tag = tag.to_string();
-                                            self.tls_mode = TlsMode::MutualTls(self.mutual_tls_sec_tag.clone());
+                                            self.mutual_tls_sec_tag = tag_str.clone();
+                                            self.tls_mode = match &self.tls_mode {
+                                                TlsMode::Tls(_) => TlsMode::Tls(tag_str),
+                                                _               => TlsMode::MutualTls(tag_str),
+                                            };
                                         }
                                     }
                                 });
@@ -666,6 +672,7 @@ impl App {
                     // In non-advanced mode, force sec_tag to 1
                     let effective_tls_mode = if !self.advanced_mode {
                         match &self.tls_mode {
+                            TlsMode::Tls(_)       => TlsMode::Tls("1".to_string()),
                             TlsMode::MutualTls(_) => TlsMode::MutualTls("1".to_string()),
                             other => other.clone(),
                         }
@@ -714,7 +721,11 @@ impl App {
                                             if let Some(tag) = mqtt_val.get("sec_tag").and_then(|v| v.as_i64()) {
                                                 self.tls_mode = match tag {
                                                     -1 => TlsMode::PlainTcp,
-                                                    0  => TlsMode::Tls,
+                                                    0  => {
+                                                        // sec_tag 0 is no longer valid; migrate to tag 1
+                                                        self.mutual_tls_sec_tag = "1".to_string();
+                                                        TlsMode::Tls("1".to_string())
+                                                    }
                                                     n  => {
                                                         let s = n.to_string();
                                                         self.mutual_tls_sec_tag = s.clone();
