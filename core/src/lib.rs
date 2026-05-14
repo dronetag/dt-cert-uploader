@@ -230,8 +230,10 @@ pub struct UploadParams {
 
 /// Progress update sent back to the caller during upload.
 pub struct UploadProgress {
-    /// Which file is currently being uploaded (0-based index out of 3)
+    /// Which file is currently being uploaded (0-based index)
     pub file_index: usize,
+    /// Total number of files being uploaded
+    pub total_files: usize,
     /// Human-readable label for current file
     pub file_label: String,
     /// Remote path being written to
@@ -244,35 +246,50 @@ pub struct UploadProgress {
 
 /// A single file to upload: (local path, remote path, label)
 fn build_file_list(params: &UploadParams) -> Vec<(String, String, String)> {
-    vec![
-        (
+    let mut files = Vec::new();
+    if !params.ca_path.is_empty() {
+        files.push((
             params.ca_path.clone(),
             format!("/storage/ca_{}.crt", params.sec_tag),
             "CA Certificate".to_string(),
-        ),
-        (
+        ));
+    }
+    if !params.client_cert_path.is_empty() {
+        files.push((
             params.client_cert_path.clone(),
             format!("/storage/client_{}.crt", params.sec_tag),
             "Client Certificate".to_string(),
-        ),
-        (
+        ));
+    }
+    if !params.client_key_path.is_empty() {
+        files.push((
             params.client_key_path.clone(),
             format!("/storage/client_{}.key", params.sec_tag),
             "Client Private Key".to_string(),
-        ),
-    ]
+        ));
+    }
+    files
 }
 
 /// Maximum allowed certificate file size (5 KB — 4 KB typical + 25% reserve)
 pub const MAX_CERT_FILE_SIZE: u64 = 5 * 1024;
 
-/// Validate all certificate file paths and sizes before attempting upload.
+/// Validate certificate file paths and sizes before attempting upload.
+/// At least one file must be provided; all provided paths are validated.
 pub fn validate_cert_files(params: &UploadParams) -> Result<(), String> {
-    let files = [
-        (&params.ca_path, "CA Certificate"),
-        (&params.client_cert_path, "Client Certificate"),
-        (&params.client_key_path, "Client Private Key"),
-    ];
+    let mut files = Vec::new();
+    if !params.ca_path.is_empty() {
+        files.push((&params.ca_path, "CA Certificate"));
+    }
+    if !params.client_cert_path.is_empty() {
+        files.push((&params.client_cert_path, "Client Certificate"));
+    }
+    if !params.client_key_path.is_empty() {
+        files.push((&params.client_key_path, "Client Private Key"));
+    }
+    if files.is_empty() {
+        return Err("No certificate files selected".to_string());
+    }
 
     for (path, label) in &files {
         let metadata = std::fs::metadata(path)
@@ -293,14 +310,16 @@ pub fn validate_cert_files(params: &UploadParams) -> Result<(), String> {
     Ok(())
 }
 
-/// Connect to the device and upload all three certificate files.
+/// Connect to the device and upload the selected certificate files.
+/// CA certificate is required; client certificate and key are uploaded only if provided.
 ///
 /// `progress_cb` is called with progress updates during upload.
 /// Return `false` from it to abort the upload.
+/// Returns the list of remote paths that were uploaded on success.
 pub fn upload_certificates(
     params: &UploadParams,
     mut progress_cb: impl FnMut(UploadProgress) -> bool,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     validate_cert_files(params)?;
 
     // Use a short open timeout so we fail fast on wrong/busy ports
@@ -308,7 +327,7 @@ pub fn upload_certificates(
         .timeout(Duration::from_secs(2))
         .open()
         .map_err(|e| format!("Failed to open serial port '{}': {}", params.port, e))?;
-    
+
         // Transmitter requires DTR and RTS signals asserted for serial communication on Windows
         if params.device_type == DeviceType::DronetagTransmitter {
             let _ = port.write_data_terminal_ready(true);
@@ -319,9 +338,13 @@ pub fn upload_certificates(
         MuxSlipSerial::new(port, params.device_type.mux_addr())
     );
 
+    let files = build_file_list(params);
+    let total_files = files.len();
+
     // Signal to UI that we are connected and starting
     progress_cb(UploadProgress {
         file_index: usize::MAX,
+        total_files,
         file_label: "Initializing...".to_string(),
         remote_path: String::new(),
         transferred: 0,
@@ -336,8 +359,6 @@ pub fn upload_certificates(
     client.use_auto_frame_size().map_err(|e| {
         format!("Device did not respond (wrong port, device type, or mux address?): {}", e)
     })?;
-
-    let files = build_file_list(params);
 
     for (file_index, (local_path, remote_path, label)) in files.iter().enumerate() {
         let data = std::fs::read(local_path)
@@ -356,6 +377,7 @@ pub fn upload_certificates(
                 Some(&mut |transferred, total| {
                     progress_cb(UploadProgress {
                         file_index,
+                        total_files,
                         file_label: label_clone.clone(),
                         remote_path: remote_path_clone.clone(),
                         transferred,
@@ -366,7 +388,7 @@ pub fn upload_certificates(
             .map_err(|e| format!("Failed to upload '{}': {}", local_path, e))?;
     }
 
-    Ok(())
+    Ok(files.into_iter().map(|(_, remote, _)| remote).collect())
 }
 
 /// Returns a list of available serial port names on the current system.

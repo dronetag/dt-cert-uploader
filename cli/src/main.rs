@@ -151,12 +151,12 @@ fn main() {
     let result = upload_certificates(&params, |_progress: UploadProgress| true);
 
     match result {
-        Ok(()) => {
+        Ok(paths) => {
             println!("Done.\n");
-            println!("All certificates uploaded successfully.");
-            println!("  CA cert:     /storage/ca_{}.crt", params.sec_tag);
-            println!("  Client cert: /storage/client_{}.crt", params.sec_tag);
-            println!("  Client key:  /storage/client_{}.key", params.sec_tag);
+            println!("Certificates uploaded successfully:");
+            for path in &paths {
+                println!("  {}", path);
+            }
         }
         Err(e) => {
             eprintln!("\nError: {}", e);

@@ -32,12 +32,13 @@ enum UploadState {
     Connecting,
     Running {
         file_index: usize,
+        total_files: usize,
         file_label: String,
         remote_path: String,
         transferred: u64,
         total: u64,
     },
-    Done,
+    Done(Vec<String>),
     Error(String),
 }
 
@@ -277,6 +278,7 @@ impl App {
                 let mut s = state.lock().unwrap();
                 *s = UploadState::Running {
                     file_index: progress.file_index,
+                    total_files: progress.total_files,
                     file_label: progress.file_label,
                     remote_path: progress.remote_path,
                     transferred: progress.transferred,
@@ -286,7 +288,7 @@ impl App {
             });
             let mut s = state.lock().unwrap();
             *s = match result {
-                Ok(()) => UploadState::Done,
+                Ok(paths) => UploadState::Done(paths),
                 Err(e) => UploadState::Error(e),
             };
         });
@@ -420,7 +422,7 @@ impl App {
                     if ui.radio(self.sec_tag == tag, tag.to_string()).clicked() {
                         self.sec_tag = tag;
                         let mut s = self.upload_state.lock().unwrap();
-                        if matches!(*s, UploadState::Done | UploadState::Error(_)) {
+                        if matches!(*s, UploadState::Done(_) | UploadState::Error(_)) {
                             *s = UploadState::Idle;
                         }
                     }
@@ -446,9 +448,7 @@ impl App {
         ui.add_space(12.0);
 
         let ready = !self.port.is_empty()
-            && !self.ca_path.is_empty()
-            && !self.client_cert_path.is_empty()
-            && !self.client_key_path.is_empty()
+            && (!self.ca_path.is_empty() || !self.client_cert_path.is_empty() || !self.client_key_path.is_empty())
             && !busy;
 
         if ui
@@ -470,7 +470,6 @@ impl App {
                     *self.upload_state.lock().unwrap() = UploadState::Error(e);
                 }
                 Ok(()) => {
-                    *self.upload_state.lock().unwrap() = UploadState::Idle;
                     self.start_upload();
                 }
             }
@@ -488,29 +487,30 @@ impl App {
                     ui.label("Connecting to device...");
                 });
             }
-            UploadState::Running { file_index, file_label, remote_path, transferred, total } => {
+            UploadState::Running { file_index, total_files, file_label, remote_path, transferred, total } => {
                 if file_index == usize::MAX {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label("Initializing...");
                     });
                 } else {
+                    let n = total_files as f32;
                     let overall_pct =
-                        (file_index as f32) / 3.0 + (transferred as f32 / total as f32) / 3.0;
-                    ui.label(format!("[{}/3] {} → {}", file_index + 1, file_label, remote_path));
+                        (file_index as f32) / n + (transferred as f32 / total as f32) / n;
+                    ui.label(format!("[{}/{}] {} → {}", file_index + 1, total_files, file_label, remote_path));
                     ui.add(egui::ProgressBar::new(overall_pct).show_percentage().animate(true));
                     ui.label(format!("{} / {} bytes", transferred, total));
                 }
             }
-            UploadState::Done => {
+            UploadState::Done(paths) => {
                 ui.add(egui::ProgressBar::new(1.0).show_percentage());
                 ui.colored_label(
                     egui::Color32::from_rgb(80, 200, 80),
-                    format!("✔  All certificates uploaded successfully"),
+                    "✔  Certificates uploaded successfully",
                 );
-                ui.label(format!("  /storage/ca_{}.crt", self.sec_tag));
-                ui.label(format!("  /storage/client_{}.crt", self.sec_tag));
-                ui.label(format!("  /storage/client_{}.key", self.sec_tag));
+                for path in &paths {
+                    ui.label(format!("  {}", path));
+                }
             }
             UploadState::Error(msg) => {
                 ui.colored_label(egui::Color32::from_rgb(220, 80, 80), format!("✖  Error: {}", msg));
